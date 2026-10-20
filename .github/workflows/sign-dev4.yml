@@ -1,5 +1,5 @@
-# DEV19 PREPARATION ONLY. UNSET input pins block execution. Reuse the existing sign-dev4.yml path.
-name: Sign the approved local DEV19 APK
+# DEV20 PREPARATION ONLY. UNSET input pins block execution. Reuse the existing sign-dev4.yml path.
+name: Sign the approved local DEV20 APK
 on:
   workflow_dispatch:
 
@@ -7,21 +7,21 @@ permissions:
   contents: read
 
 concurrency:
-  group: wings-of-humanity-dev19-signing
+  group: wings-of-humanity-dev20-signing
   cancel-in-progress: false
 
 env:
-  SOURCE_COMMIT: 5b6f50bdbc5085ce3f5db07106f04648dcf1ab75
-  INPUT_SHA256: de7a5005ab20cbfd0f431722c3110257b8513035c83ef4d3ebef02a5ee831e2e
-  INPUT_BYTES: 52664029
-  SOURCE_SHA256: 83c5c052d90f2bd931e0bbdccf1c29a47c9e2cae25851c6f9090de2d6e9077bf
-  BUILD_REPORT_SHA256: b2a09ba42748c235af156b185257e6112a0ca01564ca9fb60e271b5b9e7e4598
-  BUILD_REPORT_BYTES: 1989
+  SOURCE_COMMIT: 340c72bfb16122febc0983994b01a63bce51fc63
+  INPUT_SHA256: 8635d4a429183eaba6e93e8ebecf58068a1dbe06236b31f2a0e8aada84a7031e
+  INPUT_BYTES: 52722943
+  SOURCE_SHA256: fe9021907f7e0c748525db75d1c835d1a2a987a059c75a01958b1b0952b22b95
+  BUILD_REPORT_SHA256: 77155f5a7165d0638f4b282ec16420ea3334975fc0ba766083f1feff1c87dc84
+  BUILD_REPORT_BYTES: 2018
   TEMPLATE_SHA256: 5cd4cfc1a8fc23ed45be5f0a36a6cc279d15b50a40c6ef69c89276895441cd1d
-  RELEASE_ID: 415779197
-  APK_ASSET_ID: 650358050
-  REPORT_ASSET_ID: 650358516
-  RELEASE_TAG: wings-of-humanity-dev19-signing
+  RELEASE_ID: 418223881
+  APK_ASSET_ID: 658863476
+  REPORT_ASSET_ID: 658864188
+  RELEASE_TAG: wings-of-humanity-dev20-signing
   GH_HOST: github.com
   GH_DEBUG: ''
   GH_PROMPT_DISABLED: '1'
@@ -36,7 +36,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.repository == 'shaterguy/wings-of-humanity' &&
-      github.ref == 'refs/heads/main' &&
+      github.ref == 'refs/heads/dev20-native-signing-20261020' &&
       github.actor == github.repository_owner &&
       github.triggering_actor == github.repository_owner
     runs-on: ubuntu-24.04
@@ -95,7 +95,7 @@ jobs:
           printf 'JAVA_HOME=%s\nANDROID_BUILD_TOOLS_VERSION=35.0.0\nWINGS_GH_VERSION=%s\nWINGS_JDK_RUNTIME=%s\n' "$java_home" "$gh_version" "$jdk_runtime" >> "$GITHUB_ENV"
           echo 'TOOL_PREFLIGHT_PASS'
 
-      - name: Read the exact approved DEV19 commit
+      - name: Read the exact approved DEV20 commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: shaterguy/wings-of-humanity
@@ -140,8 +140,8 @@ jobs:
 
           def input_specs(env):
               return [
-                  (int(env['APK_ASSET_ID']), 'WingsOfHumanity-v0.1.0-dev19-unsigned.apk', int(env['INPUT_BYTES']), env['INPUT_SHA256'], 'unsigned.apk'),
-                  (int(env['REPORT_ASSET_ID']), 'WingsOfHumanity-v0.1.0-dev19-unsigned.apk.build.json', int(env['BUILD_REPORT_BYTES']), env['BUILD_REPORT_SHA256'], 'build.json'),
+                  (int(env['APK_ASSET_ID']), 'WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d-unsigned.apk', int(env['INPUT_BYTES']), env['INPUT_SHA256'], 'unsigned.apk'),
+                  (int(env['REPORT_ASSET_ID']), 'WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d-unsigned.apk.build.json', int(env['BUILD_REPORT_BYTES']), env['BUILD_REPORT_SHA256'], 'build.json'),
               ]
 
           def check_asset(asset, aid, name, size, digest):
@@ -165,9 +165,9 @@ jobs:
           def output_specs(env, folder):
               run, attempt = env['GITHUB_RUN_ID'], env['GITHUB_RUN_ATTEMPT']
               require(run.isdecimal() and attempt.isdecimal(), 'Invalid run/attempt')
-              base = f'WingsOfHumanity-v0.1.0-dev19-run{run}-attempt{attempt}'
-              return [(folder/'WingsOfHumanity-v0.1.0-dev19.apk', base + '.apk'),
-                      (folder/'WingsOfHumanity-v0.1.0-dev19.apk.signing.json', base + '.apk.signing.json')]
+              base = f'WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d-run{run}-attempt{attempt}'
+              return [(folder/'WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d.apk', base + '.apk'),
+                      (folder/'WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d.apk.signing.json', base + '.apk.signing.json')]
 
           def check_output_receipt(folder, env):
               apk, receipt = [item[0] for item in output_specs(env, folder)]
@@ -219,17 +219,20 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os, sys, tempfile, zipfile
+          import hashlib, json, os, sys, tempfile, zipfile
           from pathlib import Path
           root = Path('source').resolve()
           work = Path(os.environ['RUNNER_TEMP'])/'shigan-input'
           sys.path.insert(0, str(root/'tools/build'))
           import android_common as common
+          from native_product_contract import native_archive_report
+          if hashlib.sha256((root/'tools/build/sign_android.py').read_bytes()).hexdigest() != 'c57f83a956d910561b862ebef6b26218ddef84568ed89b8783826313e1243a3a':
+              raise SystemExit('Exact baseline signer changed')
           if (work/'unsigned.apk').stat().st_size != int(os.environ['INPUT_BYTES']):
               raise SystemExit('Unsigned APK size mismatch')
           report = json.loads((work/'build.json').read_text())
-          expected = {'package': 'com.shaterguy.wingsofhumanity.dev', 'version_name': '0.1.0-dev19',
-                      'version_code': 19, 'abi': 'arm64-v8a', 'signed': False,
+          expected = {'package': 'com.shaterguy.wingsofhumanity.dev', 'version_name': '0.1.0-dev20-candidate-native-pursuit-r6d',
+                      'version_code': 20, 'abi': 'arm64-v8a', 'signed': False,
                       'development_only': True, 'final_export_allowed': False, 'build_mode': 'development-validation',
                       'sha256': os.environ['INPUT_SHA256'], 'source_sha256': os.environ['SOURCE_SHA256'],
                       'template_sha256': os.environ['TEMPLATE_SHA256']}
@@ -240,6 +243,7 @@ jobs:
               raise SystemExit('Five-placeholder development report binding mismatch')
           with zipfile.ZipFile(work/'unsigned.apk') as apk:
               common.validate_package(common.parse_android_manifest(apk.read('AndroidManifest.xml')))
+              native_archive_report(apk, root, common.source_file)
           with tempfile.TemporaryDirectory(dir=work) as stage:
               provenance = common.stage_project(root, Path(stage)/'project', manifest)
           if provenance['source_sha256'] != os.environ['SOURCE_SHA256']:
@@ -360,12 +364,16 @@ jobs:
           PY
           python3 source/tools/build/sign_android.py --github-new-dev --development-validation --verified-input-only \
             --input "$RUNNER_TEMP/shigan-input/unsigned.apk" \
-            --output "$RUNNER_TEMP/shigan-output/WingsOfHumanity-v0.1.0-dev19.apk" \
+            --output "$RUNNER_TEMP/shigan-output/WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d.apk" \
             --expected-input-sha256 "$INPUT_SHA256" --expected-source-sha256 "$SOURCE_SHA256"
           python3 - <<'PY'
-          import hashlib, json, os
+          import hashlib, json, os, sys, zipfile
           from pathlib import Path
-          output = Path(os.environ['RUNNER_TEMP'])/'shigan-output/WingsOfHumanity-v0.1.0-dev19.apk'
+          root = Path('source').resolve()
+          sys.path.insert(0, str(root/'tools/build'))
+          import android_common as common
+          from native_product_contract import native_archive_report
+          output = Path(os.environ['RUNNER_TEMP'])/'shigan-output/WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d.apk'
           receipt = output.with_suffix('.apk.signing.json')
           report = json.loads(receipt.read_text())
           identity = json.loads((Path(os.environ['RUNNER_TEMP'])/'shigan-input/public-identity.json').read_text())
@@ -375,14 +383,18 @@ jobs:
               or report['certificate_sha256'] != os.environ['EXPECTED_CERT_SHA256']
               or report['source_sha256'] != os.environ['SOURCE_SHA256']
               or report.get('package') != {'package': 'com.shaterguy.wingsofhumanity.dev',
-                                           'version_name': '0.1.0-dev19', 'version_code': 19, 'abi': 'arm64-v8a'}
+                                           'version_name': '0.1.0-dev20-candidate-native-pursuit-r6d', 'version_code': 20, 'abi': 'arm64-v8a'}
               or report.get('build_mode') != 'development-validation'
               or report.get('development_only') is not True
               or report.get('final_export_allowed') is not False
               or report.get('payload_identity') != 'matched'
               or report.get('template_revalidated') is not False):
               raise SystemExit('Signed output receipt mismatch')
-          report.update({'input_public_identity': identity,
+          with zipfile.ZipFile(output) as apk:
+              native_report = native_archive_report(apk, root, common.source_file)
+          report.update({'native_archive': native_report,
+                         'android_in_app_load_proved': False,
+                         'input_public_identity': identity,
                          'certificate_binding': 'pinned-dev4-cert-equals-registered-secret-public-cert-equals-apk-cert',
                          'source_commit': os.environ['SOURCE_COMMIT'],
                          'release_id': os.environ['RELEASE_ID'],
@@ -405,15 +417,15 @@ jobs:
           set +x
           gh api --hostname github.com --method GET "https://api.github.com/repos/shaterguy/wings-of-humanity/releases/$RELEASE_ID" > "$RUNNER_TEMP/shigan-input/release.json"
           python3 "$RUNNER_TEMP/release-check.py" before-output
-          base="WingsOfHumanity-v0.1.0-dev19-run${GITHUB_RUN_ID}-attempt${GITHUB_RUN_ATTEMPT}"
+          base="WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d-run${GITHUB_RUN_ID}-attempt${GITHUB_RUN_ATTEMPT}"
           # POST creates a new unique asset. No PATCH/DELETE/clobber, no release publish.
           gh api --hostname github.com --method POST -H 'Content-Type: application/vnd.android.package-archive' \
             "https://uploads.github.com/repos/shaterguy/wings-of-humanity/releases/$RELEASE_ID/assets?name=$base.apk" \
-            --input "$RUNNER_TEMP/shigan-output/WingsOfHumanity-v0.1.0-dev19.apk" > "$RUNNER_TEMP/shigan-input/$base.apk.uploaded.json"
+            --input "$RUNNER_TEMP/shigan-output/WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d.apk" > "$RUNNER_TEMP/shigan-input/$base.apk.uploaded.json"
           gh api --hostname github.com --method GET "https://api.github.com/repos/shaterguy/wings-of-humanity/releases/$RELEASE_ID" > "$RUNNER_TEMP/shigan-input/release.json"
           python3 "$RUNNER_TEMP/release-check.py" metadata
           gh api --hostname github.com --method POST -H 'Content-Type: application/json' \
             "https://uploads.github.com/repos/shaterguy/wings-of-humanity/releases/$RELEASE_ID/assets?name=$base.apk.signing.json" \
-            --input "$RUNNER_TEMP/shigan-output/WingsOfHumanity-v0.1.0-dev19.apk.signing.json" > "$RUNNER_TEMP/shigan-input/$base.apk.signing.json.uploaded.json"
+            --input "$RUNNER_TEMP/shigan-output/WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d.apk.signing.json" > "$RUNNER_TEMP/shigan-input/$base.apk.signing.json.uploaded.json"
           gh api --hostname github.com --method GET "https://api.github.com/repos/shaterguy/wings-of-humanity/releases/$RELEASE_ID" > "$RUNNER_TEMP/shigan-input/release.json"
           python3 "$RUNNER_TEMP/release-check.py" after-output
