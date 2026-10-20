@@ -1,0 +1,514 @@
+# Owner-only work-branch signing. Change reviewed pins for each new candidate; never sign arbitrary inputs.
+name: Sign the approved work-branch APK
+on:
+  workflow_dispatch:
+      inputs:
+        source_branch:
+          description: "Must match the reviewed source_branch pin in this branch workflow"
+          required: true
+          type: string
+          default: "dev20-native-pursuit-r6d-20261020"
+        source_commit:
+          description: "Must match the reviewed source_commit pin in this branch workflow"
+          required: true
+          type: string
+          default: "340c72bfb16122febc0983994b01a63bce51fc63"
+        release_id:
+          description: "Must match the reviewed release_id pin in this branch workflow"
+          required: true
+          type: string
+          default: "418223881"
+        apk_asset_id:
+          description: "Must match the reviewed apk_asset_id pin in this branch workflow"
+          required: true
+          type: string
+          default: "658863476"
+        report_asset_id:
+          description: "Must match the reviewed report_asset_id pin in this branch workflow"
+          required: true
+          type: string
+          default: "658864188"
+        expected_input_sha256:
+          description: "Must match the reviewed expected_input_sha256 pin in this branch workflow"
+          required: true
+          type: string
+          default: "8635d4a429183eaba6e93e8ebecf58068a1dbe06236b31f2a0e8aada84a7031e"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wings-of-humanity-dev20-signing
+  cancel-in-progress: false
+
+env:
+  SOURCE_BRANCH: dev20-native-pursuit-r6d-20261020
+  SOURCE_COMMIT: 340c72bfb16122febc0983994b01a63bce51fc63
+  INPUT_SHA256: 8635d4a429183eaba6e93e8ebecf58068a1dbe06236b31f2a0e8aada84a7031e
+  INPUT_BYTES: 52722943
+  SOURCE_SHA256: fe9021907f7e0c748525db75d1c835d1a2a987a059c75a01958b1b0952b22b95
+  BUILD_REPORT_SHA256: 77155f5a7165d0638f4b282ec16420ea3334975fc0ba766083f1feff1c87dc84
+  BUILD_REPORT_BYTES: 2018
+  TEMPLATE_SHA256: 5cd4cfc1a8fc23ed45be5f0a36a6cc279d15b50a40c6ef69c89276895441cd1d
+  RELEASE_ID: 418223881
+  APK_ASSET_ID: 658863476
+  REPORT_ASSET_ID: 658864188
+  RELEASE_TAG: wings-of-humanity-dev20-signing
+  GH_HOST: github.com
+  GH_DEBUG: ''
+  GH_PROMPT_DISABLED: '1'
+  IDENTITY_ID: wings-of-humanity-github-dev-20261012
+  EXPECTED_CERT_SHA256: 0ea1f152a801330f69ca0301a638de283e665c814535b54f407b1974c6bd2ae0
+
+jobs:
+  sign:
+    # GitHub permissions are job-wide, never step-scoped. Used for draft asset I/O.
+    permissions:
+      contents: write
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'shaterguy/wings-of-humanity' &&
+      github.ref_type == 'branch' &&
+      github.ref == format('refs/heads/{0}', inputs.source_branch) &&
+      github.actor == github.repository_owner &&
+      github.triggering_actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Bind dispatch to the reviewed work branch and immutable inputs
+        env:
+          REQUEST_BRANCH: ${{ inputs.source_branch }}
+          REQUEST_COMMIT: ${{ inputs.source_commit }}
+          REQUEST_RELEASE: ${{ inputs.release_id }}
+          REQUEST_APK: ${{ inputs.apk_asset_id }}
+          REQUEST_REPORT: ${{ inputs.report_asset_id }}
+          REQUEST_HASH: ${{ inputs.expected_input_sha256 }}
+          GH_TOKEN: ${{ github.token }}
+          GH_CONFIG_DIR: ${{ runner.temp }}/shigan-branch-gh-config
+        run: |
+          set -euo pipefail
+          set +x
+          python3 - <<'BIND_PY'
+          import os, re
+          def validate_dispatch(env):
+              pairs = {'REQUEST_BRANCH': 'SOURCE_BRANCH', 'REQUEST_COMMIT': 'SOURCE_COMMIT',
+                       'REQUEST_RELEASE': 'RELEASE_ID', 'REQUEST_APK': 'APK_ASSET_ID',
+                       'REQUEST_REPORT': 'REPORT_ASSET_ID', 'REQUEST_HASH': 'INPUT_SHA256'}
+              if any(env.get(request) != env.get(pin) for request, pin in pairs.items()):
+                  raise ValueError('Dispatch does not match committed approval pins')
+              if env.get('GITHUB_REF') != 'refs/heads/' + env['SOURCE_BRANCH']:
+                  raise ValueError('Not the designated work branch')
+              if not re.fullmatch('[0-9a-f]{40}', env.get('GITHUB_SHA', '')):
+                  raise ValueError('Invalid immutable workflow commit')
+          validate_dispatch(os.environ)
+          BIND_PY
+          mkdir "$GH_CONFIG_DIR"
+          gh api --hostname github.com --method GET "https://api.github.com/repos/shaterguy/wings-of-humanity/compare/$SOURCE_COMMIT...$GITHUB_SHA" > "$RUNNER_TEMP/branch-source-compare.json"
+          python3 - <<'ANCESTRY_PY'
+          import json, os
+          from pathlib import Path
+          def validate_source_relation(data, env):
+              source, workflow = env['SOURCE_COMMIT'], env['GITHUB_SHA']
+              if data.get('base_commit', {}).get('sha') != source or data.get('merge_base_commit', {}).get('sha') != source:
+                  raise ValueError('Payload source is not the workflow ancestor')
+              if data.get('status') != 'ahead' or data.get('behind_by') != 0 or not isinstance(data.get('ahead_by'), int) or data['ahead_by'] < 1:
+                  raise ValueError('Require a workflow-only descendant of payload source')
+              commits = data.get('commits', [])
+              if not commits or len(commits) != data.get('total_commits') or len(commits) != data['ahead_by'] or commits[-1].get('sha') != workflow:
+                  raise ValueError('Incomplete comparison or wrong workflow commit identity')
+              files = data.get('files', [])
+              if len(files) != 1 or files[0].get('filename') != '.github/workflows/sign-dev4.yml' or files[0].get('status') not in ('added', 'modified'):
+                  raise ValueError('Workflow commit changed product source or unexpected paths')
+          validate_source_relation(json.loads((Path(os.environ['RUNNER_TEMP'])/'branch-source-compare.json').read_text()), os.environ)
+          ANCESTRY_PY
+          unset GH_TOKEN
+
+      - name: Require reviewed setup and pinned preinstalled tools
+        run: |
+          set -euo pipefail
+          for field in RELEASE_ID APK_ASSET_ID REPORT_ASSET_ID INPUT_BYTES BUILD_REPORT_BYTES; do
+            [[ "${!field}" =~ ^[1-9][0-9]*$ ]] || { echo "BLOCKED: $field is unset"; exit 1; }
+          done
+          for field in INPUT_SHA256 SOURCE_SHA256 BUILD_REPORT_SHA256; do
+            [[ "${!field}" =~ ^[0-9a-f]{64}$ ]] || { echo "BLOCKED: $field is unset"; exit 1; }
+          done
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "BLOCKED: SOURCE_COMMIT is unset"; exit 1; }
+          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ && "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          check() { local label="$1"; shift; echo "CHECK $label"; "$@" || { echo "BLOCKED: $label"; exit 1; }; }
+          echo 'CHECK gh.version'
+          gh_output="$(gh --version)" || { echo 'BLOCKED: gh.version command'; exit 1; }
+          IFS= read -r gh_first <<< "$gh_output"
+          printf 'PUBLIC gh: %s\n' "$gh_first"
+          [[ "$gh_first" =~ ^gh\ version\ ([0-9]+\.[0-9]+\.[0-9]+)(\ |$) ]] || { echo 'BLOCKED: gh.version format'; exit 1; }
+          gh_version="${BASH_REMATCH[1]}"
+          java_home="${JAVA_HOME_17_X64:-}"
+          printf 'PUBLIC JAVA_HOME_17_X64: %s\n' "$java_home"
+          check jdk.home test -n "$java_home"
+          check jdk.java test -x "$java_home/bin/java"
+          check jdk.keytool test -x "$java_home/bin/keytool"
+          check jdk.release test -r "$java_home/release"
+          grep -E '^(JAVA_VERSION|JAVA_RUNTIME_VERSION)=' "$java_home/release" || true
+          cat > "$RUNNER_TEMP/WingsJavaVersion.java" <<'JAVA_VERSION'
+          class WingsJavaVersion {
+              public static void main(String[] args) {
+                  System.out.println(Runtime.version().feature() + "|" + Runtime.version());
+              }
+          }
+          JAVA_VERSION
+          echo 'CHECK jdk.source-file-support'
+          java_version="$("$java_home/bin/java" --source 17 "$RUNNER_TEMP/WingsJavaVersion.java")" || { echo 'BLOCKED: jdk.source-file-support'; exit 1; }
+          printf 'PUBLIC JDK feature|runtime: %s\n' "$java_version"
+          check jdk.runtime.major test "${java_version%%|*}" = 17
+          jdk_runtime="${java_version#*|}"
+          [[ "$jdk_runtime" =~ ^17([.+-][0-9A-Za-z.+-]+)?$ ]] || { echo 'BLOCKED: jdk.runtime.format'; exit 1; }
+          android_home="${ANDROID_HOME:-}"
+          printf 'PUBLIC ANDROID_HOME: %s\n' "$android_home"
+          check android.home test -n "$android_home"
+          build_tools="$android_home/build-tools/35.0.0"
+          check android.zipalign test -x "$build_tools/zipalign"
+          check android.apksigner test -f "$build_tools/lib/apksigner.jar"
+          check android.properties test -r "$build_tools/source.properties"
+          grep -E '^Pkg\.(Desc|Revision)[[:space:]]*=' "$build_tools/source.properties" || true
+          check android.revision grep -Eq '^Pkg.Revision[[:space:]]*=[[:space:]]*35\.0\.0[[:space:]]*$' "$build_tools/source.properties"
+          printf 'JAVA_HOME=%s\nANDROID_BUILD_TOOLS_VERSION=35.0.0\nWINGS_GH_VERSION=%s\nWINGS_JDK_RUNTIME=%s\n' "$java_home" "$gh_version" "$jdk_runtime" >> "$GITHUB_ENV"
+          echo 'TOOL_PREFLIGHT_PASS'
+
+      - name: Read the exact approved DEV20 commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: shaterguy/wings-of-humanity
+          ref: ${{ env.SOURCE_COMMIT }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          lfs: false
+          set-safe-directory: false
+          clean: false
+
+      - name: Fetch pinned draft Release input assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_CONFIG_DIR: ${{ runner.temp }}/shigan-gh-config
+        run: |
+          set -euo pipefail
+          set +x
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test -z "$(git -C source status --porcelain)"
+          mkdir "$RUNNER_TEMP/shigan-input" "$RUNNER_TEMP/shigan-output" "$GH_CONFIG_DIR"
+          cat > "$RUNNER_TEMP/release-check.py" <<'RELEASE_PY'
+          import hashlib, json, os, sys
+          from pathlib import Path
+
+          REPO = 'shaterguy/wings-of-humanity'
+          API = 'https://api.github.com/repos/' + REPO
+          UPLOAD = 'https://uploads.github.com/repos/' + REPO
+
+          def require(ok, message):
+              if not ok:
+                  raise ValueError(message)
+
+          def check_release(data, env):
+              rid = int(env['RELEASE_ID'])
+              require(data.get('id') == rid and data.get('url') == f'{API}/releases/{rid}', 'Wrong release identity')
+              require(data.get('draft') is True and data.get('prerelease') is True, 'Release must remain draft/prerelease')
+              require(data.get('tag_name') == env['RELEASE_TAG'], 'Wrong release tag')
+              require(data.get('target_commitish') == env['SOURCE_COMMIT'], 'Wrong release source target')
+              require(data.get('upload_url') == f'{UPLOAD}/releases/{rid}/assets{{?name,label}}', 'Unexpected upload host/path')
+
+          def input_specs(env):
+              return [
+                  (int(env['APK_ASSET_ID']), 'WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d-unsigned.apk', int(env['INPUT_BYTES']), env['INPUT_SHA256'], 'unsigned.apk'),
+                  (int(env['REPORT_ASSET_ID']), 'WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d-unsigned.apk.build.json', int(env['BUILD_REPORT_BYTES']), env['BUILD_REPORT_SHA256'], 'build.json'),
+              ]
+
+          def check_asset(asset, aid, name, size, digest):
+              require(asset.get('id') == aid and asset.get('url') == f'{API}/releases/assets/{aid}', 'Wrong asset identity/host')
+              require(asset.get('name') == name and asset.get('size') == size and asset.get('state') == 'uploaded', 'Wrong asset name/size/state')
+              require(asset.get('digest') == 'sha256:' + digest, 'Wrong remote asset digest')
+
+          def check_inputs(data, env):
+              check_release(data, env)
+              specs = input_specs(env)
+              require(len({s[0] for s in specs}) == 2, 'Input asset IDs must be distinct')
+              for aid, name, size, digest, _ in specs:
+                  matches = [a for a in data.get('assets', []) if a.get('id') == aid]
+                  require(len(matches) == 1, 'Pinned input asset absent/duplicated')
+                  check_asset(matches[0], aid, name, size, digest)
+
+          def check_file(path, size, digest):
+              require(path.is_file() and not path.is_symlink() and path.stat().st_size == size, 'Local file size/type mismatch')
+              require(hashlib.sha256(path.read_bytes()).hexdigest() == digest, 'Local file digest mismatch')
+
+          def output_specs(env, folder):
+              run, attempt = env['GITHUB_RUN_ID'], env['GITHUB_RUN_ATTEMPT']
+              require(run.isdecimal() and attempt.isdecimal(), 'Invalid run/attempt')
+              base = f'WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d-run{run}-attempt{attempt}'
+              return [(folder/'WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d.apk', base + '.apk'),
+                      (folder/'WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d.apk.signing.json', base + '.apk.signing.json')]
+
+          def check_output_receipt(folder, env):
+              apk, receipt = [item[0] for item in output_specs(env, folder)]
+              report = json.loads(receipt.read_text())
+              require(report.get('input_sha256') == env['INPUT_SHA256'] and report.get('source_sha256') == env['SOURCE_SHA256'], 'Output provenance mismatch')
+              require(report.get('certificate_sha256') == env['EXPECTED_CERT_SHA256'] and report.get('final_export_allowed') is False, 'Output identity/final flag mismatch')
+              require(report.get('source_commit') == env['SOURCE_COMMIT'] and report.get('run_id') == env['GITHUB_RUN_ID'] and report.get('run_attempt') == env['GITHUB_RUN_ATTEMPT'], 'Output run/source mismatch')
+              check_file(apk, apk.stat().st_size, report['output_sha256'])
+
+          def main(mode, work, env):
+              data = json.loads((work/'release.json').read_text())
+              check_inputs(data, env)
+              if mode == 'downloaded':
+                  for _, _, size, digest, filename in input_specs(env):
+                      check_file(work/filename, size, digest)
+              elif mode in ('before-output', 'after-output'):
+                  folder = work.parent/'shigan-output'
+                  check_output_receipt(folder, env)
+                  for path, name in output_specs(env, folder):
+                      matches = [a for a in data.get('assets', []) if a.get('name') == name]
+                      if mode == 'before-output':
+                          require(not matches, 'Output already exists; never overwrite')
+                      else:
+                          require(len(matches) == 1, 'Uploaded output not uniquely present')
+                          result = json.loads((work/(name + '.uploaded.json')).read_text())
+                          require(result.get('id') == matches[0].get('id'), 'Upload response ID mismatch')
+                          check_asset(matches[0], result['id'], name, path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest())
+                          print('Verified draft release asset ID:', result['id'], 'name:', name)
+              else:
+                  require(mode == 'metadata', 'Invalid validation phase')
+
+          if __name__ == '__main__':
+              try:
+                  main(sys.argv[1], Path(os.environ['RUNNER_TEMP'])/'shigan-input', os.environ)
+              except (ValueError, KeyError, OSError, json.JSONDecodeError):
+                  raise SystemExit('Release input/output contract failed') from None
+          RELEASE_PY
+          gh api --hostname github.com --method GET "https://api.github.com/repos/shaterguy/wings-of-humanity/releases/$RELEASE_ID" > "$RUNNER_TEMP/shigan-input/release.json"
+          python3 "$RUNNER_TEMP/release-check.py" metadata
+          # Exact numeric asset IDs; gh strips authentication on cross-host redirects.
+          gh api --hostname github.com --method GET -H 'Accept: application/octet-stream' "https://api.github.com/repos/shaterguy/wings-of-humanity/releases/assets/$APK_ASSET_ID" > "$RUNNER_TEMP/shigan-input/unsigned.apk"
+          gh api --hostname github.com --method GET -H 'Accept: application/octet-stream' "https://api.github.com/repos/shaterguy/wings-of-humanity/releases/assets/$REPORT_ASSET_ID" > "$RUNNER_TEMP/shigan-input/build.json"
+          gh api --hostname github.com --method GET "https://api.github.com/repos/shaterguy/wings-of-humanity/releases/$RELEASE_ID" > "$RUNNER_TEMP/shigan-input/release.json"
+          python3 "$RUNNER_TEMP/release-check.py" downloaded
+          unset GH_TOKEN
+
+      - name: Check approved inputs without signing secrets
+        id: verify_inputs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, sys, tempfile, zipfile
+          from pathlib import Path
+          root = Path('source').resolve()
+          work = Path(os.environ['RUNNER_TEMP'])/'shigan-input'
+          sys.path.insert(0, str(root/'tools/build'))
+          import android_common as common
+          from native_product_contract import native_archive_report
+          if hashlib.sha256((root/'tools/build/sign_android.py').read_bytes()).hexdigest() != 'c57f83a956d910561b862ebef6b26218ddef84568ed89b8783826313e1243a3a':
+              raise SystemExit('Exact baseline signer changed')
+          if (work/'unsigned.apk').stat().st_size != int(os.environ['INPUT_BYTES']):
+              raise SystemExit('Unsigned APK size mismatch')
+          report = json.loads((work/'build.json').read_text())
+          expected = {'package': 'com.shaterguy.wingsofhumanity.dev', 'version_name': '0.1.0-dev20-candidate-native-pursuit-r6d',
+                      'version_code': 20, 'abi': 'arm64-v8a', 'signed': False,
+                      'development_only': True, 'final_export_allowed': False, 'build_mode': 'development-validation',
+                      'sha256': os.environ['INPUT_SHA256'], 'source_sha256': os.environ['SOURCE_SHA256'],
+                      'template_sha256': os.environ['TEMPLATE_SHA256']}
+          if any(report.get(k) != value for k, value in expected.items()):
+              raise SystemExit('Local build report binding mismatch')
+          manifest = common.read_manifest(root, development_validation=True)
+          if report.get('development_validation') != manifest['development_validation']:
+              raise SystemExit('Five-placeholder development report binding mismatch')
+          with zipfile.ZipFile(work/'unsigned.apk') as apk:
+              common.validate_package(common.parse_android_manifest(apk.read('AndroidManifest.xml')))
+              native_archive_report(apk, root, common.source_file)
+          with tempfile.TemporaryDirectory(dir=work) as stage:
+              provenance = common.stage_project(root, Path(stage)/'project', manifest)
+          if provenance['source_sha256'] != os.environ['SOURCE_SHA256']:
+              raise SystemExit('Approved source fingerprint mismatch')
+          PY
+
+      - name: Sign with approved repository Secrets and verify receipt
+        id: sign
+        env:
+          SIGNING_KEYSTORE_B64: ${{ secrets.SHIGAN_DEV_KEYSTORE_B64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SHIGAN_DEV_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          export SIGNING_DIR
+          SIGNING_DIR="$(mktemp -d "$RUNNER_TEMP/shigan-secret.XXXXXX")"
+          trap 'rm -rf -- "$SIGNING_DIR"' EXIT
+          python3 - <<'PY'
+          import base64, binascii, os
+          from pathlib import Path
+          folder = Path(os.environ['SIGNING_DIR'])
+          encoded = os.environ.get('SIGNING_KEYSTORE_B64', '')
+          password = os.environ.get('SIGNING_STORE_PASSWORD', '')
+          if not encoded or not password or len(encoded.encode()) > 49152 or '\n' in password or '\r' in password:
+              raise SystemExit('Signing Secrets are missing or have unsupported format')
+          try:
+              key_bytes = base64.b64decode(''.join(encoded.split()), validate=True)
+          except (ValueError, binascii.Error):
+              raise SystemExit('Signing keystore encoding is invalid') from None
+          if not key_bytes:
+              raise SystemExit('Signing keystore is empty')
+          with (folder/'key.store').open('xb') as stream: stream.write(key_bytes)
+          with (folder/'password').open('xb') as stream: stream.write(password.encode('utf-8'))
+          PY
+          unset SIGNING_KEYSTORE_B64 SIGNING_STORE_PASSWORD
+          export KEYSTORE_PATH="$SIGNING_DIR/key.store"
+          export KEYSTORE_PASSWORD_FILE="$SIGNING_DIR/password"
+          export KEY_PASSWORD_FILE="$SIGNING_DIR/password"
+          cat > "$SIGNING_DIR/ReadSigningPublicIdentity.java" <<'JAVA'
+          import java.io.File;
+          import java.nio.charset.StandardCharsets;
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.security.KeyStore;
+          import java.security.MessageDigest;
+          import java.util.ArrayList;
+          import java.util.Arrays;
+          import java.util.Base64;
+          import java.util.HexFormat;
+          import java.util.Locale;
+          
+          class ReadSigningPublicIdentity {
+              static String[] inspect(KeyStore store) throws Exception {
+                  String type = store.getType().toUpperCase(Locale.ROOT);
+                  if (!type.equals("PKCS12") && !type.equals("JKS")) throw new Exception();
+                  var keys = new ArrayList<String>();
+                  var aliases = store.aliases();
+                  while (aliases.hasMoreElements()) {
+                      String alias = aliases.nextElement();
+                      if (store.entryInstanceOf(alias, KeyStore.PrivateKeyEntry.class)) keys.add(alias);
+                  }
+                  if (keys.size() != 1) throw new Exception();
+                  String alias = keys.get(0);
+                  if (alias.isBlank() || alias.chars().anyMatch(c -> c < 32 || c == 127)) throw new Exception();
+                  byte[] certificate = store.getCertificate(alias).getEncoded();
+                  String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(certificate));
+                  return new String[]{type, Base64.getEncoder().encodeToString(alias.getBytes(StandardCharsets.UTF_8)), digest};
+              }
+              public static void main(String[] args) {
+                  char[] password = null;
+                  try {
+                      password = Files.readString(Path.of(args[1]), StandardCharsets.UTF_8).toCharArray();
+                      KeyStore store = KeyStore.getInstance(new File(args[0]), password);
+                      for (String field : inspect(store)) System.out.println(field);
+                  } catch (Exception ignored) {
+                      System.err.println("Public signing identity unavailable: require one private-key entry in a supported keystore");
+                      System.exit(2);
+                  } finally {
+                      if (password != null) Arrays.fill(password, '\0');
+                  }
+              }
+          }
+          JAVA
+          python3 - <<'PY'
+          import base64, json, os, re, sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path('source/tools/build').resolve()))
+          import sign_android as signer
+          folder = Path(os.environ['SIGNING_DIR'])
+          env = dict(os.environ)
+          tool_env = {k: env[k] for k in ('PATH', 'JAVA_HOME', 'HOME', 'TEMP', 'TMP', 'TMPDIR', 'LANG') if k in env}
+          try:
+              result = signer.run_tool([signer.jdk_tool('java', env), str(folder/'ReadSigningPublicIdentity.java'),
+                                        str(folder/'key.store'), str(folder/'password')], 'public identity discovery', tool_env)
+              fields = result.splitlines()
+              if len(fields) != 3 or fields[0] not in ('JKS', 'PKCS12') or not re.fullmatch('[0-9a-f]{64}', fields[2]):
+                  raise ValueError()
+              # Pin the existing dev4 update lineage before resolving or using the private key.
+              if fields[2] != os.environ['EXPECTED_CERT_SHA256']:
+                  raise ValueError()
+              alias = base64.b64decode(fields[1], validate=True).decode('utf-8')
+              if not alias.strip() or any(ord(c) < 32 or ord(c) == 127 for c in alias):
+                  raise ValueError()
+              identity = {'schema_version': 1, 'policy': 'github-new-dev',
+                          'repository': 'shaterguy/wings-of-humanity',
+                          'package': 'com.shaterguy.wingsofhumanity.dev',
+                          'identity_id': os.environ['IDENTITY_ID'], 'key_alias': alias,
+                          'keystore_type': fields[0], 'certificate_sha256': fields[2]}
+              public = json.dumps(identity, indent=2) + '\n'
+              for path in (Path('source/docs/build/github-dev-signer-public.json'),
+                           Path(os.environ['RUNNER_TEMP'])/'shigan-input/public-identity.json'):
+                  with path.open('x', encoding='utf-8') as stream:
+                      stream.write(public)
+              signer.resolve_signing_identity(env, github_new_dev=True, development_validation=True)
+          except Exception:
+              raise SystemExit('Registered signing key public identity could not be verified') from None
+          PY
+          python3 source/tools/build/sign_android.py --github-new-dev --development-validation --verified-input-only \
+            --input "$RUNNER_TEMP/shigan-input/unsigned.apk" \
+            --output "$RUNNER_TEMP/shigan-output/WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d.apk" \
+            --expected-input-sha256 "$INPUT_SHA256" --expected-source-sha256 "$SOURCE_SHA256"
+          python3 - <<'PY'
+          import hashlib, json, os, sys, zipfile
+          from pathlib import Path
+          root = Path('source').resolve()
+          sys.path.insert(0, str(root/'tools/build'))
+          import android_common as common
+          from native_product_contract import native_archive_report
+          output = Path(os.environ['RUNNER_TEMP'])/'shigan-output/WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d.apk'
+          receipt = output.with_suffix('.apk.signing.json')
+          report = json.loads(receipt.read_text())
+          identity = json.loads((Path(os.environ['RUNNER_TEMP'])/'shigan-input/public-identity.json').read_text())
+          if (report['input_sha256'] != os.environ['INPUT_SHA256']
+              or report['output_sha256'] != hashlib.sha256(output.read_bytes()).hexdigest()
+              or report['certificate_sha256'] != identity['certificate_sha256']
+              or report['certificate_sha256'] != os.environ['EXPECTED_CERT_SHA256']
+              or report['source_sha256'] != os.environ['SOURCE_SHA256']
+              or report.get('package') != {'package': 'com.shaterguy.wingsofhumanity.dev',
+                                           'version_name': '0.1.0-dev20-candidate-native-pursuit-r6d', 'version_code': 20, 'abi': 'arm64-v8a'}
+              or report.get('build_mode') != 'development-validation'
+              or report.get('development_only') is not True
+              or report.get('final_export_allowed') is not False
+              or report.get('payload_identity') != 'matched'
+              or report.get('template_revalidated') is not False):
+              raise SystemExit('Signed output receipt mismatch')
+          with zipfile.ZipFile(output) as apk:
+              native_report = native_archive_report(apk, root, common.source_file)
+          report.update({'native_archive': native_report,
+                         'android_in_app_load_proved': False,
+                         'input_public_identity': identity,
+                         'certificate_binding': 'pinned-dev4-cert-equals-registered-secret-public-cert-equals-apk-cert',
+                         'source_commit': os.environ['SOURCE_COMMIT'],
+                         'release_id': os.environ['RELEASE_ID'],
+                         'input_asset_ids': {k: os.environ[k] for k in ('APK_ASSET_ID', 'REPORT_ASSET_ID')},
+                         'github_cli': os.environ['WINGS_GH_VERSION'],
+                         'workflow_commit': os.environ['GITHUB_SHA'],
+                         'workflow_ref': os.environ['GITHUB_REF'],
+                         'source_branch': os.environ['SOURCE_BRANCH'],
+                         'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                         'jdk_runtime': os.environ['WINGS_JDK_RUNTIME'], 'android_build_tools': '35.0.0',
+                         'runner_image_version': os.environ.get('ImageVersion', 'unknown')})
+          receipt.write_text(json.dumps(report, indent=2) + '\n')
+          PY
+
+      - name: Add only verified outputs to the same draft Release
+        if: ${{ success() && steps.sign.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_CONFIG_DIR: ${{ runner.temp }}/shigan-gh-config
+        run: |
+          set -euo pipefail
+          set +x
+          gh api --hostname github.com --method GET "https://api.github.com/repos/shaterguy/wings-of-humanity/releases/$RELEASE_ID" > "$RUNNER_TEMP/shigan-input/release.json"
+          python3 "$RUNNER_TEMP/release-check.py" before-output
+          base="WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d-run${GITHUB_RUN_ID}-attempt${GITHUB_RUN_ATTEMPT}"
+          # POST creates a new unique asset. No PATCH/DELETE/clobber, no release publish.
+          gh api --hostname github.com --method POST -H 'Content-Type: application/vnd.android.package-archive' \
+            "https://uploads.github.com/repos/shaterguy/wings-of-humanity/releases/$RELEASE_ID/assets?name=$base.apk" \
+            --input "$RUNNER_TEMP/shigan-output/WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d.apk" > "$RUNNER_TEMP/shigan-input/$base.apk.uploaded.json"
+          gh api --hostname github.com --method GET "https://api.github.com/repos/shaterguy/wings-of-humanity/releases/$RELEASE_ID" > "$RUNNER_TEMP/shigan-input/release.json"
+          python3 "$RUNNER_TEMP/release-check.py" metadata
+          gh api --hostname github.com --method POST -H 'Content-Type: application/json' \
+            "https://uploads.github.com/repos/shaterguy/wings-of-humanity/releases/$RELEASE_ID/assets?name=$base.apk.signing.json" \
+            --input "$RUNNER_TEMP/shigan-output/WingsOfHumanity-v0.1.0-dev20-candidate-native-pursuit-r6d.apk.signing.json" > "$RUNNER_TEMP/shigan-input/$base.apk.signing.json.uploaded.json"
+          gh api --hostname github.com --method GET "https://api.github.com/repos/shaterguy/wings-of-humanity/releases/$RELEASE_ID" > "$RUNNER_TEMP/shigan-input/release.json"
+          python3 "$RUNNER_TEMP/release-check.py" after-output
