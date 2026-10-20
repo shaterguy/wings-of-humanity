@@ -1,0 +1,8 @@
+[configuration]
+entry_symbol = "wings_resident_init"
+compatibility_minimum = "4.6"
+reloadable = false
+
+[libraries]
+android.debug.arm64 = "res://addons/wings_native/libwings_resident.arm64.so"
+linux.debug.arm64 = "res://addons/wings_native/libwings_resident.arm64.so"

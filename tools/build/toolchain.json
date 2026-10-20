@@ -10,8 +10,8 @@
   },
   "android": {
     "package": "com.shaterguy.wingsofhumanity.dev",
-    "version_name": "0.1.0-dev19",
-    "version_code": 19,
+    "version_name": "0.1.0-dev20-candidate-native-pursuit-r6d",
+    "version_code": 20,
     "abi": "arm64-v8a"
   }
 }

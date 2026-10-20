@@ -6,6 +6,16 @@ func _export() -> void:
 	await get_tree().create_timer(2.0).timeout
 	while EditorInterface.get_resource_filesystem().is_scanning(): await get_tree().create_timer(0.1).timeout
 	var kind := OS.get_environment("SHIGAN_EXPORT_KIND")
+	if kind == "android":
+		var native_descriptor := "res://addons/wings_native/resident.gdextension"
+		if not ProjectSettings.get_setting("wings/native_pursuit",false) or not GDExtensionManager.is_extension_loaded(native_descriptor) or not ClassDB.class_exists("WingsResidentContext"):
+			printerr("EXPORT_BLOCKED reason=native_product_startup_not_registered")
+			get_tree().quit(3)
+			return
+		if FileAccess.get_file_as_string("res://.godot/extension_list.cfg") != native_descriptor + "\n":
+			printerr("EXPORT_BLOCKED reason=native_product_extension_list_not_exact")
+			get_tree().quit(3)
+			return
 	var source := OS.get_environment("SHIGAN_EXPORT_TEMPLATE")
 	var output := OS.get_environment("SHIGAN_EXPORT_OUTPUT")
 	if source.is_empty() or output.is_empty() or not kind in ["android","web"]:
@@ -37,8 +47,8 @@ func _export() -> void:
 		preset.set("package/name","진격의 거인 인류의 날개")
 		preset.set("package/signed",false)
 		preset.set("launcher_icons/main_192x192","res://assets/art/ui/game_icon.png")
-		preset.set("version/code",19)
-		preset.set("version/name","0.1.0-dev19")
+		preset.set("version/code",20)
+		preset.set("version/name","0.1.0-dev20-candidate-native-pursuit-r6d")
 		preset.set("architectures/armeabi-v7a",false)
 		preset.set("architectures/arm64-v8a",true)
 		preset.set("architectures/x86",false)

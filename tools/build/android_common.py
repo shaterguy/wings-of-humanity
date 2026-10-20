@@ -10,6 +10,7 @@ import re
 import shutil
 import struct
 import zipfile
+from native_product_contract import native_source_files, verify_native_entries
 
 ROOT = Path(__file__).resolve().parents[2]
 PIN = json.loads((Path(__file__).with_name('toolchain.json')).read_text(encoding='utf-8'))
@@ -343,6 +344,7 @@ def stage_project(root: Path, dest: Path, manifest: dict) -> dict:
     selected = {'project.godot', 'assets/manifest.json', 'addons/chapter_export/plugin.cfg',
                 'addons/chapter_export/plugin.gd', 'tools/build/export_readiness.gd',
                 'tools/build/production_export_filter.gd'}
+    selected.update(native_source_files(root, source_file))
     selected.update(bundled_font_sources(root))
     selected.update(loot_art_sources(root))
     selected.update(armored_runtime_sources(root, manifest))
@@ -465,6 +467,7 @@ def validate_archive(archive: zipfile.ZipFile, template: zipfile.ZipFile, root: 
         raise BuildError('APK asset manifest differs from the current source manifest')
     allowed = {'assets/assets/manifest.json', 'assets/project.binary', 'assets/assets.sparsepck', 'assets/_cl_',
                'assets/.godot/global_script_class_cache.cfg', 'assets/.godot/uid_cache.bin'}
+    allowed.update(verify_native_entries(archive, root, source_file))
     armored_sources = armored_runtime_sources(root, manifest)
     armored_compared = 0
     if armored_sources:

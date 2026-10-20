@@ -10,6 +10,15 @@ const RoleCatalog = preload("res://game/combat/enemy_role_catalog.gd")
 const RoleModel = preload("res://game/combat/enemy_attack_model.gd")
 const RoleBudget = preload("res://game/combat/enemy_threat_budget.gd")
 const RoleQuery = preload("res://game/combat/enemy_world_query.gd")
+# Out-of-band implementation evidence, never serialized into gameplay state.
+var _native_pursuit_counts := {"admissions":0,"batches":0,"scopes":0,"scope_refusals":0,"fallback_batches":0,"walkable_calls":0,"sweep_calls":0,"move_calls":0,"direction_calls":0,"query_count":0}
+func native_pursuit_diagnostics() -> Dictionary:
+	var result := _native_pursuit_counts.duplicate(true)
+	result.enabled = bool(ProjectSettings.get_setting("wings/native_pursuit",false))
+	result.backend = "resident-r5"
+	result.native_source_freeze = "774e3c75cfd772a90834573f2ecee9f2a0f4475bf4e8b7472b8d41f443e529d8"
+	result.reader_present = _streamed != null and _streamed.get_script() == Streamed and _streamed._native_pursuit != null
+	return result
 const LIVE_ROLE_IDS := ["grabber","quadruped","stone_thrower"]
 const ROLE_RETRY_TICKS := 15
 const Behaviors = preload("res://game/combat/enemy_behaviors.gd")
@@ -961,6 +970,8 @@ func _apply_mobility_damage(state: Dictionary, events: Array[Dictionary]) -> voi
 	_collect_drops(state,events,rewards.size())
 	for reward in rewards: _claim_boss_reward(state,reward,events)
 func _move_enemies(state: Dictionary, events: Array[Dictionary]) -> Array[int]:
+	if get_script() == load("res://game/core/run_simulation.gd") and state.has("world") and state.world.stage == "city" and _streamed != null and _streamed.get_script() == Streamed:
+		_streamed._bind_native_pursuit(state,_native_pursuit_counts)
 	# Successful target clearances belong only to this movement batch.
 	var movement_targets := {}
 	var waiting_moves: Array[int] = []
@@ -2492,6 +2503,9 @@ func _movement_target(state: Dictionary, target: Vector2, radius: float, cache: 
 # most two ticks. This changes AI trajectories; it is not an equivalent cache.
 # No helper-local steering history participates in saved-state reconstruction.
 func _move_pursuing_enemy(state: Dictionary, entity: Dictionary, movement_targets: Variant = null) -> void:
+	var native_scope = null
+	if get_script() == load("res://game/core/run_simulation.gd") and state.has("world") and state.world.stage == "city" and _streamed != null and _streamed.get_script() == Streamed:
+		native_scope = _streamed._begin_native_pursuit(int(state.active_tick))
 	var position := _vec(entity.position)
 	var target := _vec(state.player.position)
 	var speed := float(entity.speed)
@@ -2512,6 +2526,7 @@ func _move_pursuing_enemy(state: Dictionary, entity: Dictionary, movement_target
 	entity.velocity = _array(velocity)
 	entity.position = _array(next)
 	if not direction.is_zero_approx(): entity.facing = _array(direction)
+	if native_scope != null: native_scope.close()
 func _direction_world(state: Dictionary, point: Vector2, target: Vector2, radius: float, actor_id: String, movement_targets: Variant = null, steering: Dictionary = {}) -> Vector2:
 	if not state.has("world") or state.world.stage == "dock": return _world.direction(point,target,radius,_finite_geometry(state))
 	var legal_target := _movement_target(state,target,radius,movement_targets)

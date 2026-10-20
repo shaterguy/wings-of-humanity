@@ -47,6 +47,7 @@ var _definitions: Dictionary
 var _generator
 var _world
 var _navigation
+var _native_pursuit
 var _hydration: Dictionary = {}
 var _stamp := "" # Diagnostic serialization only; numeric forms are not identity.
 var _prepared_identity: Dictionary = {}
@@ -269,6 +270,7 @@ func _prepare_candidate(state: Dictionary, hydration: Dictionary, commands: Arra
 	var needed := requirements(state,commands)
 	if not needed.ok: return needed
 	if needed.stage == "dock":
+		_native_pursuit = null
 		_world = null; _navigation = null; _hydration.clear(); _blocked_routes.clear(); _stage = "dock"
 		_remember_identity(state); _query_failure.clear(); _last_status = {"ok":true,"stage":"dock"}
 		return _last_status.duplicate(true)
@@ -309,7 +311,12 @@ func _prepare_candidate(state: Dictionary, hydration: Dictionary, commands: Arra
 	for chunk in needed.chunks:
 		var key := Address.key(chunk)
 		next_hydration[key] = hydration[key].duplicate(true)
-	_world = candidate; _navigation = Navigation.new(NavigationView.new(_world)); _hydration = next_hydration
+	var native_reader = null
+	if get_script() == load("res://game/core/streamed_run_world.gd") and ProjectSettings.get_setting("wings/native_pursuit",false):
+		native_reader = load("res://game/core/native_pursuit_reader.gd").try_create(candidate)
+	_world = candidate; _native_pursuit = native_reader
+	_navigation = Navigation.new(NavigationView.new(_world)) if native_reader == null else native_reader.navigation_reader()
+	_hydration = next_hydration
 	_blocked_routes.clear()
 	_remember_identity(state); _stage = "city"; _query_failure.clear(); _last_status = prepared.duplicate(true)
 	return prepared
@@ -432,6 +439,17 @@ func begin_query_batch(state: Dictionary, commands: Array = []) -> Dictionary:
 	if not ready.ok: return ready
 	_query_failure.clear()
 	return {"ok":true}
+# Core binds once after commands/player movement and before ordered actor actions.
+# All public role, mobility, projectile and player physics stay on the real world.
+func _bind_native_pursuit(state: Dictionary, counters: Dictionary) -> void:
+	if _native_pursuit == null:
+		if ProjectSettings.get_setting("wings/native_pursuit",false):
+			counters.fallback_batches += 1
+		return
+	_native_pursuit.attach_counters(counters)
+	_native_pursuit.bind_batch(int(state.active_tick) if matches(state) else -1,_prepared_identity)
+func _begin_native_pursuit(tick: int):
+	return null if _native_pursuit == null else _native_pursuit.begin_scope(tick,_prepared_identity)
 func query_status() -> Dictionary:
 	return {"ok":true} if _query_failure.is_empty() else _query_failure.duplicate(true)
 func render_view(state: Dictionary) -> Dictionary:
@@ -449,14 +467,18 @@ func status() -> Dictionary:
 func walkable(position: Vector2, radius: float) -> Dictionary:
 	var checked := _query_guard(position,Vector2.ZERO,radius)
 	if not checked.ok: return checked
+	if _native_pursuit != null and _native_pursuit.active(): return _query_result(_native_pursuit.read_walkable(position,radius))
 	return {"ok":true,"walkable":_world.walkable(position,radius)}
 func move(position: Vector2, delta: Vector2, radius: float) -> Dictionary:
 	var checked := _query_guard(position,delta,radius)
 	if not checked.ok: return checked
+	if _native_pursuit != null and _native_pursuit.active(): return _query_result(_native_pursuit.read_move(position,delta,radius))
 	return {"ok":true,"position":_world.move(position,delta,radius)}
 func sweep(position: Vector2, delta: Vector2, radius: float) -> Dictionary:
 	var checked := _query_guard(position,delta,radius)
-	return checked if not checked.ok else _query_result(_world.sweep(position,delta,radius))
+	if not checked.ok: return checked
+	if _native_pursuit != null and _native_pursuit.active(): return _query_result(_native_pursuit.read_sweep(position,delta,radius))
+	return _query_result(_world.sweep(position,delta,radius))
 func cover_query(origin: Vector2, target: Vector2, radius: float, mask: int) -> Dictionary:
 	if mask < 0 or mask > 31: return _query_result(failure("invalid_query"))
 	var checked := _query_guard(origin,target-origin,radius)

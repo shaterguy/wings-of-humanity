@@ -76,6 +76,7 @@ func _add_json(path: String) -> void:
 			add_file(full,FileAccess.get_file_as_bytes(full),false)
 	for folder in dir.get_directories(): _add_json(path.path_join(folder))
 func _export_file(path: String, _type: String, _features: PackedStringArray) -> void:
+	if path == "res://addons/wings_native/resident.gdextension" and _features.has("android"): return
 	if path.begins_with("res://game/") or path.begins_with("res://scenes/"): return
 	if _allowed_assets.has(path): return
 	skip()
